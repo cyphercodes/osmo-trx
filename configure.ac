@@ -68,6 +68,11 @@ AC_ARG_WITH(usrp1, [
         [enable USRP1 gnuradio based transceiver])
 ])
 
+AC_ARG_WITH(bladerf, [
+    AS_HELP_STRING([--with-bladerf],
+        [enable BladeRF gnuradio based transceiver])
+])
+
 AC_ARG_WITH(singledb, [
     AS_HELP_STRING([--with-singledb],
         [enable single daughterboard use on USRP1])
@@ -113,6 +118,11 @@ AS_IF([test "x$with_usrp1" != "xyes"],[
     PKG_CHECK_MODULES(FFTWF, fftw3f)
 ])
 
+AS_IF([test "x$with_bladerf" = "xyes"], [
+    PKG_CHECK_MODULES(BLADERF, libbladeRF >= 0.14)
+    AC_DEFINE(USE_BLADERF, 1, Define to 1 if using BladeRF)
+])
+
 AS_IF([test "x$with_singledb" = "xyes"], [
     AC_DEFINE(SINGLEDB, 1, Define to 1 for single daughterboard)
 ])
@@ -153,6 +163,7 @@ CHECK_BUILTIN_SUPPORT([__builtin_cpu_supports],
   [Runtime SIMD detection will be disabled])
 
 AM_CONDITIONAL(USRP1, [test "x$with_usrp1" = "xyes"])
+AM_CONDITIONAL(BLADERF, [test "x$with_bladerf" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM, [test "x$with_neon" = "xyes" || test "x$with_neon_vfpv4" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM_A15, [test "x$with_neon_vfpv4" = "xyes"])
 
@@ -170,8 +181,6 @@ AC_CONFIG_FILES([\
     CommonLibs/Makefile \
     GSM/Makefile \
     Transceiver52M/Makefile \
-    Transceiver52M/arm/Makefile \
-    Transceiver52M/x86/Makefile \
 ])
 
 AC_OUTPUT

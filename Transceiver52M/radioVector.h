@@ -24,39 +24,37 @@
 
 #include "sigProcLib.h"
 #include "GSMCommon.h"
-#include "Interthread.h"
 
-class radioVector {
+class radioVector : public signalVector {
 public:
-	radioVector(GSM::Time& wTime, size_t size = 0,
-		    size_t start = 0, size_t chans = 1);
-
-	radioVector(GSM::Time& wTime, signalVector *vector);
-	~radioVector();
-
+	radioVector(const signalVector& wVector, GSM::Time& wTime);
 	GSM::Time getTime() const;
 	void setTime(const GSM::Time& wTime);
 	bool operator>(const radioVector& other) const;
 
-	signalVector *getVector(size_t chan = 0) const;
-	bool setVector(signalVector *vector, size_t chan = 0);
-	size_t chans() const { return vectors.size(); }
 private:
-	std::vector<signalVector *> vectors;
 	GSM::Time mTime;
 };
 
 class noiseVector : std::vector<float> {
 public:
-	noiseVector(size_t size = 0);
+	noiseVector(size_t len = 0);
 	bool insert(float val);
-	float avg() const;
+	float avg();
 
 private:
-	size_t itr;
+	std::vector<float>::iterator it;
 };
 
-class VectorFIFO : public InterthreadQueue<radioVector> { };
+class VectorFIFO {
+public:
+	unsigned size();
+	void put(radioVector *ptr);
+	radioVector *get();
+
+private:
+	PointerFIFO mQ;
+};
 
 class VectorQueue : public InterthreadPriorityQueue<radioVector> {
 public:

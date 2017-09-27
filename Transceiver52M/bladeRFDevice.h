@@ -1,62 +1,48 @@
 /*
-* Copyright 2008 Free Software Foundation, Inc.
-*
-* This software is distributed under multiple licenses; see the COPYING file in the main directory for licensing information for this specific distribuion.
-*
-* This use of this software may be subject to additional restrictions.
-* See the LEGAL file in the main directory for details.
+ * Copyright 2014 Free Software Foundation, Inc.
+ *
+ * This software is distributed under multiple licenses; see the COPYING file in
+ * the main directory for licensing information for this specific distribuion.
+ *
+ * This use of this software may be subject to additional restrictions.
+ * See the LEGAL file in the main directory for details.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *
+ **/
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#ifndef _BLADERF_DEVICE_H_
+#define _BLADERF_DEVICE_H_
 
-*/
-
-#ifndef _USRP_DEVICE_H_
-#define _USRP_DEVICE_H_
-
+#include <libbladeRF.h>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
 #include "radioDevice.h"
 
-#include <usrp/usrp_standard.h>
-#include <usrp/usrp_bytesex.h>
-#include <usrp/usrp_prims.h>
 #include <sys/time.h>
 #include <math.h>
 #include <string>
 #include <iostream>
 
-#include <boost/shared_ptr.hpp>
-typedef boost::shared_ptr<usrp_standard_tx> usrp_standard_tx_sptr;
-typedef boost::shared_ptr<usrp_standard_rx> usrp_standard_rx_sptr;
-
-/** A class to handle a USRP rev 4, with a two RFX900 daughterboards */
-class USRPDevice: public RadioDevice {
+class bladeRFDevice: public RadioDevice {
 
 private:
 
-  static const double masterClockRate; ///< the USRP clock rate
   double desiredSampleRate; 	///< the desired sampling rate
-  usrp_standard_rx_sptr m_uRx;	///< the USRP receiver
-  usrp_standard_tx_sptr m_uTx;	///< the USRP transmitter
-
-  db_base_sptr m_dbRx;          ///< rx daughterboard
-  db_base_sptr m_dbTx;          ///< tx daughterboard
-  usrp_subdev_spec rxSubdevSpec;
-  usrp_subdev_spec txSubdevSpec;
 
   int sps;
-  double actualSampleRate;	///< the actual USRP sampling rate
-  unsigned int decimRate;	///< the USRP decimation rate
+  double actualSampleRate;	///< the actual bladeRF sampling rate
+  unsigned int decimRate;	///< the bladeRF decimation rate
 
-  unsigned long long samplesRead;	///< number of samples read from USRP
-  unsigned long long samplesWritten;	///< number of samples sent to USRP
+  unsigned long long samplesRead;	///< number of samples read from bladeRF
+  unsigned long long samplesWritten;	///< number of samples sent to bladeRF
 
-  bool started;			///< flag indicates USRP has started
-  bool skipRx;			///< set if USRP is transmit-only.
+  bool started;			///< flag indicates bladeRF has started
+  bool skipRx;			///< set if bladeRF is transmit-only.
 
   static const unsigned int currDataSize_log2 = 21;
   static const unsigned long currDataSize = (1 << currDataSize_log2);
@@ -66,10 +52,11 @@ private:
   TIMESTAMP timeStart;
   TIMESTAMP timeEnd;
   bool isAligned;
+  struct bladerf *bdev;
 
   Mutex writeLock;
 
-  short *currData;		///< internal data buffer when reading from USRP
+  short *currData;		///< internal data buffer when reading from bladeRF
   TIMESTAMP currTimestamp;	///< timestamp of internal data buffer
   unsigned currLen;		///< size of internal data buffer
 
@@ -77,77 +64,66 @@ private:
   TIMESTAMP latestWriteTimestamp;  ///< timestamp of most recent ping command
   TIMESTAMP pingTimestamp;	   ///< timestamp of most recent ping response
 
-  long long  pingOffset;
   unsigned long hi32Timestamp;
   unsigned long lastPktTimestamp;
 
   double rxGain;
-
-#ifdef SWLOOPBACK 
-  short loopbackBuffer[1000000];
-  int loopbackBufferSize;
-  double samplePeriod; 
-
-  struct timeval startTime;
-  struct timeval lastReadTime;
-  bool   firstRead;
-#endif
 
   /** Set the transmission frequency */
   bool tx_setFreq(double freq, double *actual_freq);
 
   /** Set the receiver frequency */
   bool rx_setFreq(double freq, double *actual_freq);
-  
+
  public:
 
   /** Object constructor */
-  USRPDevice(int sps, bool skipRx);
+  bladeRFDevice(int sps, bool skipRx);
 
-  /** Instantiate the USRP */
+  /** Instantiate the bladeRF */
   int open(const std::string &, bool);
 
-  /** Start the USRP */
+  /** Start the bladeRF */
   bool start();
 
-  /** Stop the USRP */
+  /** Stop the bladeRF */
   bool stop();
 
   /** Set priority not supported */
   void setPriority() { return; }
 
-  enum TxWindowType getWindowType() { return TX_WINDOW_USRP1; }
+  enum TxWindowType getWindowType() { return TX_WINDOW_FIXED; }
 
   /**
-	Read samples from the USRP.
+	Read samples from the bladeRF.
 	@param buf preallocated buf to contain read result
 	@param len number of samples desired
 	@param overrun Set if read buffer has been overrun, e.g. data not being read fast enough
 	@param timestamp The timestamp of the first samples to be read
-	@param underrun Set if USRP does not have data to transmit, e.g. data not being sent fast enough
+	@param underrun Set if bladeRF does not have data to transmit, e.g. data not being sent fast enough
 	@param RSSI The received signal strength of the read result
 	@return The number of samples actually read
   */
-  int  readSamples(short *buf, int len, bool *overrun, 
+  int  readSamples(short *buf, int len, bool *overrun,
 		   TIMESTAMP timestamp = 0xffffffff,
 		   bool *underrun = NULL,
 		   unsigned *RSSI = NULL);
   /**
-        Write samples to the USRP.
+        Write samples to the bladeRF.
         @param buf Contains the data to be written.
         @param len number of samples to write.
-        @param underrun Set if USRP does not have data to transmit, e.g. data not being sent fast enough
+        @param underrun Set if bladeRF does not have data to transmit, e.g. data not being sent fast enough
         @param timestamp The timestamp of the first sample of the data buffer.
         @param isControl Set if data is a control packet, e.g. a ping command
         @return The number of samples actually written
   */
-  int  writeSamples(short *buf, int len, bool *underrun, 
+  int  writeSamples(short *buf, int len, bool *underrun,
 		    TIMESTAMP timestamp = 0xffffffff,
 		    bool isControl = false);
- 
+
   /** Update the alignment between the read and write timestamps */
   bool updateAlignment(TIMESTAMP timestamp);
-  
+
   /** Set the transmitter frequency */
   bool setTxFreq(double wFreq);
 
@@ -155,16 +131,16 @@ private:
   bool setRxFreq(double wFreq);
 
   /** Returns the starting write Timestamp*/
-  TIMESTAMP initialWriteTimestamp(void) { return 20000;}
+  TIMESTAMP initialWriteTimestamp(void) { return 0x10000;}
 
   /** Returns the starting read Timestamp*/
-  TIMESTAMP initialReadTimestamp(void) { return 20000;}
+  TIMESTAMP initialReadTimestamp(void) { return 0;}
 
   /** returns the full-scale transmit amplitude **/
-  double fullScaleInputValue() {return 13500.0;}
+  double fullScaleInputValue() {return 2040.0;}
 
   /** returns the full-scale receive amplitude **/
-  double fullScaleOutputValue() {return 9450.0;}
+  double fullScaleOutputValue() {return 2040.0;}
 
   /** sets the receive chan gain, returns the gain setting **/
   double setRxGain(double dB);
@@ -197,5 +173,5 @@ private:
 
 };
 
-#endif // _USRP_DEVICE_H_
+#endif // _BLADERF_DEVICE_H_
 

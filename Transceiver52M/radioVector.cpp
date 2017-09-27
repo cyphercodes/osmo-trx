@@ -21,24 +21,9 @@
 
 #include "radioVector.h"
 
-radioVector::radioVector(GSM::Time &time, size_t size,
-			 size_t start, size_t chans)
-	: vectors(chans), mTime(time)
+radioVector::radioVector(const signalVector& wVector, GSM::Time& wTime)
+	: signalVector(wVector), mTime(wTime)
 {
-	for (size_t i = 0; i < vectors.size(); i++)
-		vectors[i] = new signalVector(size, start);
-}
-
-radioVector::radioVector(GSM::Time& wTime, signalVector *vector)
-	: vectors(1), mTime(wTime)
-{
-	vectors[0] = vector;
-}
-
-radioVector::~radioVector()
-{
-	for (size_t i = 0; i < vectors.size(); i++)
-		delete vectors[i];
 }
 
 GSM::Time radioVector::getTime() const
@@ -56,34 +41,17 @@ bool radioVector::operator>(const radioVector& other) const
 	return mTime > other.mTime;
 }
 
-signalVector *radioVector::getVector(size_t chan) const
+noiseVector::noiseVector(size_t n)
 {
-	if (chan >= vectors.size())
-		return NULL;
-
-	return vectors[chan];
+	this->resize(n);
+	it = this->begin();
 }
 
-bool radioVector::setVector(signalVector *vector, size_t chan)
-{
-	if (chan >= vectors.size())
-		return false;
-
-	vectors[chan] = vector;
-
-	return true;
-}
-
-noiseVector::noiseVector(size_t size)
-	: std::vector<float>(size), itr(0)
-{
-}
-
-float noiseVector::avg() const
+float noiseVector::avg()
 {
 	float val = 0.0;
 
-	for (size_t i = 0; i < size(); i++)
+	for (int i = 0; i < size(); i++)
 		val += (*this)[i];
 
 	return val / (float) size();
@@ -94,12 +62,27 @@ bool noiseVector::insert(float val)
 	if (!size())
 		return false;
 
-	if (itr >= this->size())
-		itr = 0;
+	if (it == this->end())
+		it = this->begin();
 
-	(*this)[itr++] = val;
+	*it++ = val;
 
 	return true;
+}
+
+unsigned VectorFIFO::size()
+{
+	return mQ.size();
+}
+
+void VectorFIFO::put(radioVector *ptr)
+{
+	mQ.put((void*) ptr);
+}
+
+radioVector *VectorFIFO::get()
+{
+	return (radioVector*) mQ.get();
 }
 
 GSM::Time VectorQueue::nextTime() const
