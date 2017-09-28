@@ -1,53 +1,111 @@
-# Makefile
-# This file holds the make rules for the RAD1 transceiver
+#
+# Copyright 2008 Free Software Foundation, Inc.
+# Copyright 2010 Range Networks, Inc.
+#
+# This software is distributed under the terms of the GNU Public License.
+# See the COPYING file in the main directory for details.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
 
-INCLUDES := $(GSM_INCLUDES)
-LIBDEPS  := $(GSM_DEPS)
-INCFILES := Complex.h convert.h convolve.h DummyLoad.h radioClock.h radioDevice.h \
-    radioInterface.h radioVector.h rcvLPF_651.h Resampler.h sendLPF_961.h \
-    sigProcLib.h Transceiver.h
-LOCALLIBS = $(GSM_LIBS)
+include $(top_srcdir)/Makefile.common
 
-ifneq (@HAVE_BLADERF@,no)
-PROGS:= $(PROGS) transceiver-bladeRF
-LOCALLIBS := $(LOCALLIBS) -lbladeRF
+AM_CPPFLAGS = -Wall $(STD_DEFINES_AND_INCLUDES) -I${srcdir}/common
+AM_CXXFLAGS = -ldl -lpthread
+
+SUBDIRS = arm x86
+
+if ARCH_ARM
+ARCH_LA = arm/libarch.la
+else
+ARCH_LA = x86/libarch.la
 endif
-ifneq (@HAVE_UHD@,no)
-PROGS:= $(PROGS) transceiver-uhd
-ifeq ($(BUILD_TESTS),yes)
-PROGS:= $(PROGS) USRPping-uhd
+
+if USRP1
+AM_CPPFLAGS += $(USRP_CFLAGS)
+else
+AM_CPPFLAGS += $(UHD_CFLAGS)
 endif
-LOCALLIBS := $(LOCALLIBS) -luhd
+
+rev2dir = $(datadir)/usrp/rev2
+rev4dir = $(datadir)/usrp/rev4
+
+dist_rev2_DATA = std_inband.rbf
+dist_rev4_DATA = std_inband.rbf
+
+EXTRA_DIST = \
+	README \
+	README.Talgorithm
+
+noinst_LTLIBRARIES = libtransceiver.la
+
+COMMON_SOURCES = \
+	radioInterface.cpp \
+	radioVector.cpp \
+	radioClock.cpp \
+	radioBuffer.cpp \
+	sigProcLib.cpp \
+	signalVector.cpp \
+	Transceiver.cpp \
+	ChannelizerBase.cpp \
+	Channelizer.cpp \
+	Synthesis.cpp \
+	common/fft.c
+
+libtransceiver_la_SOURCES = \
+	$(COMMON_SOURCES) \
+	Resampler.cpp \
+	radioInterfaceResamp.cpp \
+	radioInterfaceMulti.cpp
+
+bin_PROGRAMS = osmo-trx
+
+noinst_HEADERS = \
+	Complex.h \
+	radioInterface.h \
+	radioVector.h \
+	radioClock.h \
+	radioDevice.h \
+	radioBuffer.h \
+	sigProcLib.h \
+	signalVector.h \
+	Transceiver.h \
+	USRPDevice.h \
+	Resampler.h \
+	ChannelizerBase.h \
+	Channelizer.h \
+	Synthesis.h \
+	common/convolve.h \
+	common/convert.h \
+	common/scale.h \
+	common/mult.h \
+	common/fft.h
+
+osmo_trx_SOURCES = osmo-trx.cpp
+osmo_trx_LDADD = \
+	libtransceiver.la \
+	$(ARCH_LA) \
+	$(GSM_LA) \
+	$(COMMON_LA) $(SQLITE3_LIBS)
+
+if USRP1
+libtransceiver_la_SOURCES += USRPDevice.cpp
+osmo_trx_LDADD += $(USRP_LIBS)
+else if BLADERF
+libtransceiver_la_SOURCES += BladeRFDevice.cpp
+osmo_trx_LDADD += $(UHD_LIBS) $(FFTWF_LIBS)
+else
+libtransceiver_la_SOURCES += UHDDevice.cpp
+osmo_trx_LDADD += $(UHD_LIBS) $(FFTWF_LIBS)
 endif
-ifneq (@HAVE_USRP1@,no)
-PROGS:= $(PROGS) transceiver-usrp1
-FILES:= $(FILES) std_inband.rbf
-ifeq ($(BUILD_TESTS),yes)
-PROGS:= $(PROGS) USRPping-usrp1
-endif
-LOCALLIBS := $(LOCALLIBS) -lusb-1.0
-endif
-ifeq ($(BUILD_TESTS),yes)
-PROGS:= $(PROGS) sigProcLibTest
-endif
-LIBS := libtransceiver.a
-OBJS := DummyLoad.o radioClock.o radioInterface.o radioInterfaceResamp.o radioVector.o \
-    Resampler.o sigProcLib.o Transceiver.o convolve.o convert.o
-EXTRACLEAN := runTransceiver.o USRPDevice.o UHDDevice.o
-
-all:
-
-transceiver-bladeRF: bladeRFDevice.cpp runTransceiver.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< runTransceiver.o $(LIBS) $(LIBTHR) $(LDFLAGS) $(LOCALLIBS)
-
-transceiver-usrp1: USRPDevice.cpp USRPDevice.h runTransceiver.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< runTransceiver.o $(LIBS) $(LIBTHR) $(LDFLAGS) $(LOCALLIBS)
-
-transceiver-uhd: UHDDevice.cpp runTransceiver.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< runTransceiver.o $(LIBS) $(LIBTHR) $(LDFLAGS) $(LOCALLIBS)
-
-USRPping-usrp1: USRPDevice.cpp USRPDevice.h USRPping.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< USRPping.o $(LIBS) $(LIBTHR) $(LDFLAGS) $(LOCALLIBS)
-
-USRPping-uhd: UHDDevice.cpp USRPping.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< USRPping.o $(LIBS) $(LIBTHR) $(LDFLAGS) $(LOCALLIBS)
