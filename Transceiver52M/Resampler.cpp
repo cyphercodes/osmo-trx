@@ -128,23 +128,31 @@ static bool check_vec_len(int in_len, int out_len, int p, int q)
 	return true;
 }
 
-int Resampler::rotate(const float *in, size_t in_len, float *out, size_t out_len)
+int Resampler::rotate(float *in, size_t in_len, float *out, size_t out_len)
 {
 	int n, path;
+	int hist_len = filt_len - 1;
 
 	if (!check_vec_len(in_len, out_len, p, q))
 		return -1;
 
+	/* Insert history */
+	memcpy(&in[-2 * hist_len], history, hist_len * 2 * sizeof(float));
+
 	/* Generate output from precomputed input/output paths */
 	for (size_t i = 0; i < out_len; i++) {
-		n = in_index[i]; 
-		path = out_path[i]; 
+		n = in_index[i];
+		path = out_path[i];
 
 		convolve_real(in, in_len,
-			      reinterpret_cast<float *>(partitions[path]),
-			      filt_len, &out[2 * i], out_len - i,
-			      n, 1, 1, 0);
+					  partitions[path], filt_len,
+					  &out[2 * i], out_len - i,
+					  n, 1, 1, 0);
 	}
+
+	/* Save history */
+	memcpy(history, &in[2 * (in_len - hist_len)],
+		   hist_len * 2 * sizeof(float));
 
 	return out_len;
 }
