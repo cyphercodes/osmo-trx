@@ -308,7 +308,11 @@ bool RadioInterfaceMulti::pushBuffer()
 			continue;
 		}
 
-		if (!upsampler->rotate(sendBuffer[lchan]->getReadSegment(),
+		inp = sendBuffer[lchan]->getReadSegment();
+		tmpInp = (float *) malloc(sizeof(inp));
+		memcpy(tmpInp, inp, sizeof(inp));
+
+		if (!upsampler->rotate(tmpInp,
 				       sendBuffer[lchan]->getSegmentLen(),
 				       synthesis->inputBuffer(pchan),
 				       synthesis->inputLen())) {
