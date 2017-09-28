@@ -204,11 +204,17 @@ bool RadioInterfaceResamp::pushBuffer()
 	int rc;
 	size_t numSent;
 
+	float* tmpInp;
+	const float* inp;
+
 	if (sendBuffer[0]->getAvailSegments() <= 0)
 		return false;
 
-	/* Always send from the beginning of the buffer */
-	rc = upsampler->rotate(sendBuffer[0]->getReadSegment(),
+	inp = sendBuffer[0]->getReadSegment();
+	tmpInp = (float *) malloc(sizeof(inp));
+	memcpy(tmpInp, inp, sizeof(inp));
+
+	rc = upsampler->rotate(tmpInp,
 			       resamp_inchunk,
 			       (float *) outerSendBuffer->begin(),
 			       resamp_outchunk);
