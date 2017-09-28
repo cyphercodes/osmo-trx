@@ -231,6 +231,9 @@ void RadioInterfaceMulti::pullBuffer()
 	size_t num;
 	float *buf;
 
+	float* tmpInp;
+	const float* inp;
+
 	if (recvBuffer[0]->getFreeSegments() <= 0)
 		return;
 
