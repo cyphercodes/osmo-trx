@@ -20,6 +20,12 @@
 #include "radioDevice.h"
 #include "radioVector.h"
 #include "radioClock.h"
+#include "radioBuffer.h"
+#include "Resampler.h"
+#include "Channelizer.h"
+#include "Synthesis.h"
+
+static const unsigned gSlotLen = 148;      ///< number of symbols per slot, not counting guard periods
 
 /** class to interface the transceiver with the USRP */
 class RadioInterface {
@@ -28,20 +34,20 @@ protected:
 
   Thread mAlignRadioServiceLoopThread;	      ///< thread that synchronizes transmit and receive sections
 
-  VectorFIFO  mReceiveFIFO;		      ///< FIFO that holds receive  bursts
+  std::vector<VectorFIFO>  mReceiveFIFO;      ///< FIFO that holds receive  bursts
 
   RadioDevice *mRadio;			      ///< the USRP object
 
-  int mSPSTx;
-  int mSPSRx;
-  signalVector *sendBuffer;
-  signalVector *recvBuffer;
-  unsigned sendCursor;
-  unsigned recvCursor;
+  size_t mSPSTx;
+  size_t mSPSRx;
+  size_t mChans;
 
-  short *convertRecvBuffer;
-  short *convertSendBuffer;
+  std::vector<RadioBuffer *> sendBuffer;
+  std::vector<RadioBuffer *> recvBuffer;
 
+  std::vector<short *> convertRecvBuffer;
+  std::vector<short *> convertSendBuffer;
+  std::vector<float> powerScaling;
   bool underrun;			      ///< indicates writes to USRP are too slow
   bool overrun;				      ///< indicates reads from USRP are too slow
   TIMESTAMP writeTimestamp;		      ///< sample timestamp of next packet written to USRP
@@ -53,24 +59,16 @@ protected:
 
   bool mOn;				      ///< indicates radio is on
 
-  double powerScaling;
-
-  bool loadTest;
-  int mNumARFCNs;
-  signalVector *finalVec, *finalVec9;
-
 private:
 
-  /** format samples to USRP */ 
-  int radioifyVector(signalVector &wVector,
-                     float *floatVector,
-                     bool zero);
+  /** format samples to USRP */
+  int radioifyVector(signalVector &wVector, size_t chan, bool zero);
 
   /** format samples from USRP */
-  int unRadioifyVector(float *floatVector, signalVector &wVector);
+  int unRadioifyVector(signalVector *wVector, size_t chan);
 
   /** push GSM bursts into the transmit buffer */
-  virtual void pushBuffer(void);
+  virtual bool pushBuffer(void);
 
   /** pull GSM bursts from the receive buffer */
   virtual void pullBuffer(void);
@@ -78,52 +76,50 @@ private:
 public:
 
   /** start the interface */
-  void start();
+  bool start();
+  bool stop();
 
   /** intialization */
   virtual bool init(int type);
   virtual void close();
 
   /** constructor */
-  RadioInterface(RadioDevice* wRadio = NULL,
-		 int receiveOffset = 3,
-		 int wSPS = 4,
-		 GSM::Time wStartTime = GSM::Time(0));
-    
+  RadioInterface(RadioDevice* wRadio, size_t tx_sps, size_t rx_sps,
+                 size_t chans = 1, int receiveOffset = 3,
+                 GSM::Time wStartTime = GSM::Time(0));
+
   /** destructor */
   virtual ~RadioInterface();
 
   /** check for underrun, resets underrun value */
   bool isUnderrun();
-  
-  /** attach an existing USRP to this interface */
-  void attach(RadioDevice *wRadio, int wRadioOversampling);
 
   /** return the receive FIFO */
-  VectorFIFO* receiveFIFO() { return &mReceiveFIFO;}
+  VectorFIFO* receiveFIFO(size_t chan = 0);
 
   /** return the basestation clock */
   RadioClock* getClock(void) { return &mClock;};
 
   /** set transmit frequency */
-  bool tuneTx(double freq);
+  virtual bool tuneTx(double freq, size_t chan = 0);
 
   /** set receive frequency */
-  bool tuneRx(double freq);
+  virtual bool tuneRx(double freq, size_t chan = 0);
 
   /** set receive gain */
-  double setRxGain(double dB);
+  double setRxGain(double dB, size_t chan = 0);
 
   /** get receive gain */
-  double getRxGain(void);
+  double getRxGain(size_t chan = 0);
 
   /** drive transmission of GSM bursts */
-  void driveTransmitRadio(signalVector &radioBurst, bool zeroBurst);
+  void driveTransmitRadio(std::vector<signalVector *> &bursts,
+                          std::vector<bool> &zeros);
 
   /** drive reception of GSM bursts */
-  void driveReceiveRadio();
+  bool driveReceiveRadio();
 
-  void setPowerAttenuation(double atten);
+  int setPowerAttenuation(int atten, size_t chan = 0);
 
   /** returns the full-scale transmit amplitude **/
   double fullScaleInputValue();
@@ -132,7 +128,7 @@ public:
   double fullScaleOutputValue();
 
   /** set thread priority on current thread */
-  void setPriority() { mRadio->setPriority(); }
+  void setPriority(float prio = 0.5) { mRadio->setPriority(prio); }
 
   /** get transport window type of attached device */ 
   enum RadioDevice::TxWindowType getWindowType() { return mRadio->getWindowType(); }
@@ -153,25 +149,45 @@ void *AlignRadioServiceLoopAdapter(RadioInterface*);
 #endif
 
 class RadioInterfaceResamp : public RadioInterface {
-
 private:
-  signalVector *innerSendBuffer;
   signalVector *outerSendBuffer;
-  signalVector *innerRecvBuffer;
   signalVector *outerRecvBuffer;
 
-  void pushBuffer();
+  bool pushBuffer();
   void pullBuffer();
 
 public:
-
-  RadioInterfaceResamp(RadioDevice* wRadio = NULL,
-		       int receiveOffset = 3,
-		       int wSPS = 4,
-		       GSM::Time wStartTime = GSM::Time(0));
-
+  RadioInterfaceResamp(RadioDevice* wRadio, size_t tx_sps, size_t rx_sps);
   ~RadioInterfaceResamp();
 
   bool init(int type);
   void close();
+};
+
+class RadioInterfaceMulti : public RadioInterface {
+private:
+  bool pushBuffer();
+  void pullBuffer();
+
+  signalVector *outerSendBuffer;
+  signalVector *outerRecvBuffer;
+  std::vector<signalVector *> history;
+  std::vector<bool> active;
+
+  Resampler *dnsampler;
+  Resampler *upsampler;
+  Channelizer *channelizer;
+  Synthesis *synthesis;
+
+public:
+  RadioInterfaceMulti(RadioDevice* radio, size_t tx_sps,
+                      size_t rx_sps, size_t chans = 1);
+  ~RadioInterfaceMulti();
+
+  bool init(int type);
+  void close();
+
+  bool tuneTx(double freq, size_t chan);
+  bool tuneRx(double freq, size_t chan);
+  double setRxGain(double dB, size_t chan);
 };

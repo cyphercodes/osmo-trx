@@ -1,26 +1,23 @@
 /*
-* Copyright 2008, 2009 Free Software Foundation, Inc.
-*
-* This software is distributed under the terms of the GNU Affero Public License.
-* See the COPYING file in the main directory for details.
-*
-* This use of this software may be subject to additional restrictions.
-* See the LEGAL file in the main directory for details.
-
-	This program is free software: you can redistribute it and/or modify
-	it under the terms of the GNU Affero General Public License as published by
-	the Free Software Foundation, either version 3 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU Affero General Public License for more details.
-
-	You should have received a copy of the GNU Affero General Public License
-	along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-*/
+ * Radio device interface
+ *
+ * Copyright (C) 2008-2014 Free Software Foundation, Inc.
+ * Copyright (C) 2015 Ettus Research LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * See the COPYING file in the main directory for details.
+ */
 
 #include "radioInterface.h"
 #include "Resampler.h"
@@ -33,15 +30,11 @@ extern "C" {
 #define CHUNK		625
 #define NUMCHUNKS	4
 
-RadioInterface::RadioInterface(RadioDevice *wRadio,
-			       int wReceiveOffset,
-			       int wSPS,
-			       GSM::Time wStartTime)
-  : underrun(false), sendCursor(0), recvCursor(0), mOn(false),
-    mRadio(wRadio), receiveOffset(wReceiveOffset),
-    mSPSTx(wSPS), mSPSRx(1), powerScaling(1.0),
-    loadTest(false), sendBuffer(NULL), recvBuffer(NULL),
-    convertRecvBuffer(NULL), convertSendBuffer(NULL)
+RadioInterface::RadioInterface(RadioDevice *wRadio, size_t tx_sps,
+                               size_t rx_sps, size_t chans,
+                               int wReceiveOffset, GSM::Time wStartTime)
+  : mRadio(wRadio), mSPSTx(tx_sps), mSPSRx(rx_sps), mChans(chans),
+    underrun(false), overrun(false), receiveOffset(wReceiveOffset), mOn(false)
 {
   mClock.set(wStartTime);
 }
@@ -53,36 +46,40 @@ RadioInterface::~RadioInterface(void)
 
 bool RadioInterface::init(int type)
 {
-  if (type != RadioDevice::NORMAL)
+  if ((type != RadioDevice::NORMAL) || !mChans) {
+    LOG(ALERT) << "Invalid configuration";
     return false;
+  }
 
   close();
 
-  sendBuffer = new signalVector(CHUNK * mSPSTx);
-  recvBuffer = new signalVector(NUMCHUNKS * CHUNK * mSPSRx);
+  sendBuffer.resize(mChans);
+  recvBuffer.resize(mChans);
+  convertSendBuffer.resize(mChans);
+  convertRecvBuffer.resize(mChans);
+  mReceiveFIFO.resize(mChans);
+  powerScaling.resize(mChans);
 
-  convertSendBuffer = new short[sendBuffer->size() * 2];
-  convertRecvBuffer = new short[recvBuffer->size() * 2];
+  for (size_t i = 0; i < mChans; i++) {
+    sendBuffer[i] = new RadioBuffer(NUMCHUNKS, CHUNK * mSPSTx, 0, true);
+    recvBuffer[i] = new RadioBuffer(NUMCHUNKS, CHUNK * mSPSRx, 0, false);
 
-  sendCursor = 0;
-  recvCursor = 0;
+    convertSendBuffer[i] = new short[CHUNK * mSPSTx * 2];
+    convertRecvBuffer[i] = new short[CHUNK * mSPSRx * 2];
+
+    powerScaling[i] = 1.0;
+  }
 
   return true;
 }
 
 void RadioInterface::close()
 {
-  delete sendBuffer;
-  delete recvBuffer;
-  delete convertSendBuffer;
-  delete convertRecvBuffer;
-
-  sendBuffer = NULL;
-  recvBuffer = NULL;
-  convertRecvBuffer = NULL;
-  convertSendBuffer = NULL;
+  sendBuffer.resize(0);
+  recvBuffer.resize(0);
+  convertSendBuffer.resize(0);
+  convertRecvBuffer.resize(0);
 }
-
 
 double RadioInterface::fullScaleInputValue(void) {
   return mRadio->fullScaleInputValue();
@@ -92,79 +89,106 @@ double RadioInterface::fullScaleOutputValue(void) {
   return mRadio->fullScaleOutputValue();
 }
 
-
-void RadioInterface::setPowerAttenuation(double atten)
+int RadioInterface::setPowerAttenuation(int atten, size_t chan)
 {
   double rfGain, digAtten;
 
-  rfGain = mRadio->setTxGain(mRadio->maxTxGain() - atten);
-  digAtten = atten - mRadio->maxTxGain() + rfGain;
+  if (chan >= mChans) {
+    LOG(ALERT) << "Invalid channel requested";
+    return -1;
+  }
+
+  if (atten < 0.0)
+    atten = 0.0;
+
+  rfGain = mRadio->setTxGain(mRadio->maxTxGain() - (double) atten, chan);
+  digAtten = (double) atten - mRadio->maxTxGain() + rfGain;
 
   if (digAtten < 1.0)
-    powerScaling = 1.0;
+    powerScaling[chan] = 1.0;
   else
-    powerScaling = 1.0/sqrt(pow(10, (digAtten/10.0)));
+    powerScaling[chan] = 1.0 / sqrt(pow(10, digAtten / 10.0));
+
+  return atten;
 }
 
 int RadioInterface::radioifyVector(signalVector &wVector,
-				   float *retVector,
-				   bool zero)
+                                   size_t chan, bool zero)
 {
-  if (zero) {
-    memset(retVector, 0, wVector.size() * 2 * sizeof(float));
-    return wVector.size();
-  }
-
-  memcpy(retVector, wVector.begin(), wVector.size() * 2 * sizeof(float));
+  if (zero)
+    sendBuffer[chan]->zero(wVector.size());
+  else
+    sendBuffer[chan]->write((float *) wVector.begin(), wVector.size());
 
   return wVector.size();
 }
 
-int RadioInterface::unRadioifyVector(float *floatVector,
-				     signalVector& newVector)
+int RadioInterface::unRadioifyVector(signalVector *newVector, size_t chan)
 {
-  signalVector::iterator itr = newVector.begin();
-
-  if (newVector.size() > recvCursor) {
+  if (newVector->size() > recvBuffer[chan]->getAvailSamples()) {
     LOG(ALERT) << "Insufficient number of samples in receive buffer";
     return -1;
   }
 
-  for (int i = 0; i < newVector.size(); i++) {
-    *itr++ = Complex<float>(floatVector[2 * i + 0],
-			    floatVector[2 * i + 1]);
-  }
+  recvBuffer[chan]->read((float *) newVector->begin(), newVector->size());
 
-  return newVector.size();
+  return newVector->size();
 }
 
-bool RadioInterface::tuneTx(double freq)
+bool RadioInterface::tuneTx(double freq, size_t chan)
 {
-  return mRadio->setTxFreq(freq);
+  return mRadio->setTxFreq(freq, chan);
 }
 
-bool RadioInterface::tuneRx(double freq)
+bool RadioInterface::tuneRx(double freq, size_t chan)
 {
-  return mRadio->setRxFreq(freq);
+  return mRadio->setRxFreq(freq, chan);
 }
 
-
-void RadioInterface::start()
+bool RadioInterface::start()
 {
-  LOG(INFO) << "starting radio interface...";
+  if (mOn)
+    return true;
+
+  LOG(INFO) << "Starting radio device";
 #ifdef USRP1
   mAlignRadioServiceLoopThread.start((void * (*)(void*))AlignRadioServiceLoopAdapter,
                                      (void*)this);
 #endif
+
+  if (!mRadio->start())
+    return false;
+
+  for (size_t i = 0; i < mChans; i++) {
+    sendBuffer[i]->reset();
+    recvBuffer[i]->reset();
+  }
+
   writeTimestamp = mRadio->initialWriteTimestamp();
   readTimestamp = mRadio->initialReadTimestamp();
-  mRadio->start(); 
-  LOG(DEBUG) << "Radio started";
-  mRadio->updateAlignment(writeTimestamp-10000); 
+
+  mRadio->updateAlignment(writeTimestamp-10000);
   mRadio->updateAlignment(writeTimestamp-10000);
 
   mOn = true;
+  LOG(INFO) << "Radio started";
+  return true;
+}
 
+/*
+ * Stop the radio device
+ *
+ * This is a pass-through call to the device interface. Because the underlying
+ * stop command issuance generally doesn't return confirmation on device status,
+ * this call will only return false if the device is already stopped.
+ */
+bool RadioInterface::stop()
+{
+  if (!mOn || !mRadio->stop())
+    return false;
+
+  mOn = false;
+  return true;
 }
 
 #ifdef USRP1
@@ -183,69 +207,71 @@ void RadioInterface::alignRadio() {
 }
 #endif
 
-void RadioInterface::driveTransmitRadio(signalVector &radioBurst, bool zeroBurst)
+void RadioInterface::driveTransmitRadio(std::vector<signalVector *> &bursts,
+                                        std::vector<bool> &zeros)
 {
   if (!mOn)
     return;
 
-  radioifyVector(radioBurst,
-                 (float *) (sendBuffer->begin() + sendCursor), zeroBurst);
+  for (size_t i = 0; i < mChans; i++)
+    radioifyVector(*bursts[i], i, zeros[i]);
 
-  sendCursor += radioBurst.size();
-
-  pushBuffer();
+  while (pushBuffer());
 }
 
-void RadioInterface::driveReceiveRadio() {
+bool RadioInterface::driveReceiveRadio()
+{
+  radioVector *burst = NULL;
 
-  if (!mOn) return;
-
-  if (mReceiveFIFO.size() > 8) return;
+  if (!mOn)
+    return false;
 
   pullBuffer();
 
   GSM::Time rcvClock = mClock.get();
   rcvClock.decTN(receiveOffset);
   unsigned tN = rcvClock.TN();
-  int rcvSz = recvCursor;
-  int readSz = 0;
+  int recvSz = recvBuffer[0]->getAvailSamples();
   const int symbolsPerSlot = gSlotLen + 8;
+  int burstSize;
 
-  // while there's enough data in receive buffer, form received 
-  //    GSM bursts and pass up to Transceiver
-  // Using the 157-156-156-156 symbols per timeslot format.
-  while (rcvSz > (symbolsPerSlot + (tN % 4 == 0)) * mSPSRx) {
-    signalVector rxVector((symbolsPerSlot + (tN % 4 == 0)) * mSPSRx);
-    unRadioifyVector((float *) (recvBuffer->begin() + readSz), rxVector);
-    GSM::Time tmpTime = rcvClock;
-    if (rcvClock.FN() >= 0) {
-      //LOG(DEBUG) << "FN: " << rcvClock.FN();
-      radioVector *rxBurst = NULL;
-      if (!loadTest)
-        rxBurst = new radioVector(rxVector,tmpTime);
-      else {
-	if (tN % 4 == 0)
-	  rxBurst = new radioVector(*finalVec9,tmpTime);
-        else
-          rxBurst = new radioVector(*finalVec,tmpTime); 
-      }
-      mReceiveFIFO.put(rxBurst); 
+  if (mSPSRx == 4)
+    burstSize = 625;
+  else
+    burstSize = symbolsPerSlot + (tN % 4 == 0);
+
+  /* 
+   * Pre-allocate head room for the largest correlation size
+   * so we can later avoid a re-allocation and copy
+   * */
+  size_t head = GSM::gRACHSynchSequence.size();
+
+  /*
+   * Form receive bursts and pass up to transceiver. Use repeating
+   * pattern of 157-156-156-156 symbols per timeslot
+   */
+  while (recvSz > burstSize) {
+    for (size_t i = 0; i < mChans; i++) {
+      burst = new radioVector(rcvClock, burstSize, head);
+      unRadioifyVector(burst->getVector(), i);
+
+      if (mReceiveFIFO[i].size() < 32)
+        mReceiveFIFO[i].write(burst);
+      else
+        delete burst;
     }
-    mClock.incTN(); 
+
+    mClock.incTN();
     rcvClock.incTN();
-    readSz += (symbolsPerSlot+(tN % 4 == 0)) * mSPSRx;
-    rcvSz -= (symbolsPerSlot+(tN % 4 == 0)) * mSPSRx;
+    recvSz -= burstSize;
 
     tN = rcvClock.TN();
+
+    if (mSPSRx != 4)
+      burstSize = (symbolsPerSlot + (tN % 4 == 0)) * mSPSRx;
   }
 
-  if (readSz > 0) {
-    memmove(recvBuffer->begin(),
-            recvBuffer->begin() + readSz,
-            (recvCursor - readSz) * 2 * sizeof(float));
-
-    recvCursor -= readSz;
-  }
+  return true;
 }
 
 bool RadioInterface::isUnderrun()
@@ -256,77 +282,76 @@ bool RadioInterface::isUnderrun()
   return retVal;
 }
 
-double RadioInterface::setRxGain(double dB)
+VectorFIFO* RadioInterface::receiveFIFO(size_t chan)
 {
-  if (mRadio)
-    return mRadio->setRxGain(dB);
-  else
-    return -1;
+  if (chan >= mReceiveFIFO.size())
+    return NULL;
+
+  return &mReceiveFIFO[chan];
 }
 
-double RadioInterface::getRxGain()
+double RadioInterface::setRxGain(double dB, size_t chan)
 {
-  if (mRadio)
-    return mRadio->getRxGain();
-  else
-    return -1;
+  return mRadio->setRxGain(dB, chan);
+}
+
+double RadioInterface::getRxGain(size_t chan)
+{
+  return mRadio->getRxGain(chan);
 }
 
 /* Receive a timestamped chunk from the device */
 void RadioInterface::pullBuffer()
 {
   bool local_underrun;
-  int num_recv;
-  float *output;
+  size_t numRecv, segmentLen = recvBuffer[0]->getSegmentLen();
 
-  if (recvCursor > recvBuffer->size() - CHUNK)
+  if (recvBuffer[0]->getFreeSegments() <= 0)
     return;
 
   /* Outer buffer access size is fixed */
-  num_recv = mRadio->readSamples(convertRecvBuffer,
-                                 CHUNK,
-                                 &overrun,
-                                 readTimestamp,
-                                 &local_underrun);
-  if (num_recv != CHUNK) {
-          LOG(ALERT) << "Receive error " << num_recv;
+  numRecv = mRadio->readSamples(convertRecvBuffer,
+                                segmentLen,
+                                &overrun,
+                                readTimestamp,
+                                &local_underrun);
+
+  if (numRecv != segmentLen) {
+          LOG(ALERT) << "Receive error " << numRecv;
           return;
   }
 
-  output = (float *) (recvBuffer->begin() + recvCursor);
-
-  convert_short_float(output, convertRecvBuffer, 2 * num_recv);
+  for (size_t i = 0; i < mChans; i++) {
+    convert_short_float(recvBuffer[i]->getWriteSegment(),
+			convertRecvBuffer[i],
+			segmentLen * 2);
+  }
 
   underrun |= local_underrun;
-
-  readTimestamp += num_recv;
-  recvCursor += num_recv;
+  readTimestamp += numRecv;
 }
 
 /* Send timestamped chunk to the device with arbitrary size */
-void RadioInterface::pushBuffer()
+bool RadioInterface::pushBuffer()
 {
-  int num_sent;
+  size_t numSent, segmentLen = sendBuffer[0]->getSegmentLen();
 
-  if (sendCursor < CHUNK)
-    return;
+  if (sendBuffer[0]->getAvailSegments() < 1)
+    return false;
 
-  if (sendCursor > sendBuffer->size())
-    LOG(ALERT) << "Send buffer overflow";
-
-  convert_float_short(convertSendBuffer,
-                      (float *) sendBuffer->begin(),
-                      powerScaling, 2 * sendCursor);
-
-  /* Send the all samples in the send buffer */ 
-  num_sent = mRadio->writeSamples(convertSendBuffer,
-                                  sendCursor,
-                                  &underrun,
-                                  writeTimestamp);
-  if (num_sent != sendCursor) {
-          LOG(ALERT) << "Transmit error " << num_sent;
+  for (size_t i = 0; i < mChans; i++) {
+    convert_float_short(convertSendBuffer[i],
+                        (float *) sendBuffer[i]->getReadSegment(),
+                        powerScaling[i],
+                        segmentLen * 2);
   }
 
-  writeTimestamp += num_sent;
-  sendCursor = 0;
+  /* Send the all samples in the send buffer */
+  numSent = mRadio->writeSamples(convertSendBuffer,
+                                 segmentLen,
+                                 &underrun,
+                                 writeTimestamp);
+  writeTimestamp += numSent;
+
+  return true;
 }
