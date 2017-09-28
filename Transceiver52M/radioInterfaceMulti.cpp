@@ -231,9 +231,6 @@ void RadioInterfaceMulti::pullBuffer()
 	size_t num;
 	float *buf;
 
-	float* tmpInp;
-	const float* inp;
-
 	if (recvBuffer[0]->getFreeSegments() <= 0)
 		return;
 
@@ -296,6 +293,9 @@ void RadioInterfaceMulti::pullBuffer()
 /* Send a timestamped chunk to the device */
 bool RadioInterfaceMulti::pushBuffer()
 {
+	float* tmpInp;
+	const float* inp;
+
 	if (sendBuffer[0]->getAvailSegments() <= 0)
 		return false;
 
