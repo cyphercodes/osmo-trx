@@ -20,15 +20,12 @@
 #ifndef _RESAMPLER_H_
 #define _RESAMPLER_H_
 
-#include <vector>
-#include <complex>
-
 class Resampler {
 public:
 	/* Constructor for rational sample rate conversion
 	 *   @param p numerator of resampling ratio
 	 *   @param q denominator of resampling ratio
-	 *   @param filt_len length of each polyphase subfilter 
+	 *   @param filt_len length of each polyphase subfilter
 	 */
 	Resampler(size_t p, size_t q, size_t filt_len = 16);
 	~Resampler();
@@ -58,7 +55,7 @@ public:
 	int rotate(float *in, size_t in_len, float *out, size_t out_len);
 
 	/* Get filter length
-	 *   @return number of taps in each filter partition 
+	 *   @return number of taps in each filter partition
 	 */
 	size_t len();
 
@@ -66,11 +63,15 @@ private:
 	size_t p;
 	size_t q;
 	size_t filt_len;
-	std::vector<size_t> in_index;
-	std::vector<size_t> out_path;
-	std::vector<std::complex<float> *> partitions;
+	size_t *in_index;
+	size_t *out_path;
 
-	void initFilters(float bw);
+	float **partitions;
+	float *history;
+
+	bool initFilters(float bw);
+	void releaseFilters();
+	void computePath();
 };
 
 #endif /* _RESAMPLER_H_ */
